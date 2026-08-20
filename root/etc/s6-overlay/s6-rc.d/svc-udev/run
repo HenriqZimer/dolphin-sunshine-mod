@@ -1,0 +1,70 @@
+#!/usr/bin/with-contenv bash
+
+# Sunshine cria mouse/teclado/gamepad virtuais via /dev/uinput, mas isso so
+# vira um dispositivo utilizavel pro X server se algo notificar o Xvfb via
+# udev hotplug - sem um daemon udev rodando, os eventos nunca chegam
+# (confirmado: input funcionava no video mas nao dava pra interagir, e
+# nao havia processo udevd nem driver xserver-xorg-input-libinput
+# instalado). Este servico roda ANTES do svc-xorg pra garantir que o
+# socket do udevd (/run/udev/control) exista quando o Xvfb subir e tente
+# carregar o hotplug via libinput.
+#
+# NOTA: o /sys deste container e read-only (padrao de seguranca do
+# Docker), entao o coldplug via `udevadm trigger` falha pros devices que ja
+# existiam antes do udevd subir (irrelevante aqui - so afeta os
+# gamepads fake do Selkies). O hotplug em tempo real (quando o Sunshine
+# cria um uinput device durante uma sessao) nao depende de escrita em
+# /sys - o kernel broadcasta o evento via netlink direto, entao continua
+# funcionando mesmo com /sys read-only.
+
+# svc-sunshine tambem instala pacote via apt (o .deb do Sunshine), sem
+# ordem garantida em relacao a este servico. DPkg::Lock::Timeout sozinho
+# nao foi suficiente (confirmado: ainda falhava as vezes mesmo com
+# timeout=120, provavelmente por dpkg triggers concorrentes, nao so lock
+# de arquivo). flock serializa de verdade - so um dos dois roda apt por
+# vez, o outro espera.
+if ! dpkg -s xserver-xorg-input-libinput >/dev/null 2>&1; then
+  echo "**** [sunshine-mod] instalando udev + driver de input libinput pro Xvfb (so na primeira vez neste container) ****"
+  flock /var/lock/sunshine-mod-apt.lock bash -c '
+    apt-get -o DPkg::Lock::Timeout=120 update -qq
+    apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends udev xserver-xorg-input-libinput
+  '
+fi
+
+mkdir -p /run/udev
+
+# Os /dev/input/eventN que o Sunshine cria via uinput sao criados pelo
+# KERNEL DO HOST (uinput e um device real do host, passado via
+# --device=/dev/uinput) - o udevd do HOST (fora de qualquer container) e
+# quem materializa o node, no /dev/input do host. O /dev do container e
+# isolado por padrao, entao so aparecem aqui se /dev/input do host for
+# montado no container (-v /dev/input:/dev/input - obrigatorio, sem isso
+# o Xvfb nunca ve nada mesmo com todo o resto certo). Mas mesmo com o
+# node visivel, o dono/grupo desses nodes e o do HOST (ex.: grupo "input"
+# com um GID especifico) - o usuario "abc" (que roda o Xvfb e o Sunshine
+# aqui dentro) precisa pertencer a esse GID pra ter permissao de leitura
+# (nodes sao 0640 - so root e o grupo dono conseguem ler). Adiciona abc a
+# todos os grupos donos dos devices existentes em /dev/input agora.
+if [ -d /dev/input ]; then
+  # gid 0 (root) fica de fora de proposito - os arquivos que aparecem com
+  # esse dono (by-id/, by-path/, os fake gamepads do Selkies) ja sao
+  # 0777/mundo-legivel, entao nao precisam do abc no grupo root pra nada -
+  # adicionar abc ao grupo 0 seria um privilegio desnecessario.
+  for gid in $(stat -c '%g' /dev/input/* 2>/dev/null | sort -u | grep -v '^0$'); do
+    gname=$(getent group "${gid}" | cut -d: -f1)
+    if [ -z "${gname}" ]; then
+      gname="hostinput${gid}"
+      groupadd -g "${gid}" "${gname}" 2>/dev/null || true
+    fi
+    usermod -aG "${gname}" abc 2>/dev/null || true
+  done
+fi
+
+# Coldplug best-effort (pode falhar por /sys ser read-only - ver nota acima).
+(
+  sleep 3
+  udevadm trigger --action=add >/dev/null 2>&1
+  udevadm settle --timeout=5 >/dev/null 2>&1
+) &
+
+exec /lib/systemd/systemd-udevd --resolve-names=never

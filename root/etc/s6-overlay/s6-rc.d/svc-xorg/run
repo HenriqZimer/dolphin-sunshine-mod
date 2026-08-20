@@ -1,0 +1,101 @@
+#!/usr/bin/with-contenv bash
+
+# SUBSTITUI o svc-xorg original da imagem (que sobe Xvfb) por um Xorg real
+# com o driver "dummy". Motivo: o /usr/bin/Xvfb desta imagem NAO e linkado
+# contra libudev (confirmado via `ldd`/`strings`) - ele nunca faz hotplug
+# dos mouse/teclado/gamepad virtuais que o Sunshine cria via uinput, entao
+# o video do Moonlight funciona mas input nunca chega no Dolphin. O driver
+# libinput do Xorg (carregado dinamicamente, /usr/lib/xorg/modules/input/
+# libinput_drv.so) E linkado contra libudev/libgudev - com Xorg+dummy no
+# lugar do Xvfb, o hotplug funciona (confirmado rodando manualmente: um
+# Xorg de teste em :2 detectou "Mouse/Keyboard passthrough" via udev
+# automaticamente, sem nenhuma config de InputClass extra alem da que a
+# imagem ja tem em /usr/share/X11/xorg.conf.d/40-libinput.conf).
+#
+# LIMITACAO DESTA POC: resolucao fixa no boot (nao redimensiona dinamico
+# via xrandr como o svc-de original faz com Xvfb - la ele assume uma saida
+# RANDR chamada "screen" que so o Xvfb cria; o driver dummy usa outro nome
+# de saida). Suficiente pra validar que o input funciona; redimensionar
+# dinamico com dummy fica pra depois, se este approach se confirmar no
+# node com GPU real.
+
+# bail early on wayland (mesma logica do script original)
+if [[ "${PIXELFLUX_WAYLAND,,}" == "true" ]]; then
+  sleep infinity
+fi
+
+if ! dpkg -s xserver-xorg-video-dummy >/dev/null 2>&1; then
+  echo "**** [sunshine-mod] instalando driver Xorg dummy (so na primeira vez neste container) ****"
+  flock /var/lock/sunshine-mod-apt.lock bash -c "
+    apt-get -o DPkg::Lock::Timeout=120 update -qq &&
+    apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends xserver-xorg-video-dummy
+  "
+fi
+
+rm -f "/tmp/.X${DISPLAY#:}-lock"
+
+# Mesma resolucao default/override que o script original do Xvfb usava.
+WIDTH=1024
+HEIGHT=768
+if [ -n "${SELKIES_MANUAL_WIDTH}" ] && [ "${SELKIES_MANUAL_WIDTH}" != "0" ]; then
+  WIDTH="${SELKIES_MANUAL_WIDTH}"
+fi
+if [ -n "${SELKIES_MANUAL_HEIGHT}" ] && [ "${SELKIES_MANUAL_HEIGHT}" != "0" ]; then
+  HEIGHT="${SELKIES_MANUAL_HEIGHT}"
+fi
+
+XORG_CONF="/tmp/sunshine-mod-dummy.conf"
+cat > "${XORG_CONF}" <<EOF
+Section "Device"
+    Identifier "DummyDevice"
+    Driver "dummy"
+    VideoRam 256000
+EndSection
+
+Section "Monitor"
+    Identifier "DummyMonitor"
+    HorizSync 5.0 - 1000.0
+    VertRefresh 5.0 - 200.0
+EndSection
+
+Section "Screen"
+    Identifier "DummyScreen"
+    Device "DummyDevice"
+    Monitor "DummyMonitor"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Virtual ${WIDTH} ${HEIGHT}
+    EndSubSection
+EndSection
+
+Section "ServerLayout"
+    Identifier "DummyLayout"
+    Screen "DummyScreen"
+EndSection
+
+Section "ServerFlags"
+    Option "AutoAddDevices" "on"
+    Option "AutoEnableDevices" "on"
+    Option "DontVTSwitch" "on"
+    Option "AllowMouseOpenFail" "on"
+EndSection
+EOF
+
+# O Selkies injeta LD_PRELOAD=...:/opt/lib/libudev.so.1.0.0-fake via
+# with-contenv, pra fazer os gamepads FAKE dele aparecerem pro Dolphin via
+# SDL/udev. Causa colateral: qualquer OUTRO processo que passe por
+# with-contenv (incluindo este Xorg) herda essa libudev falsa, que so
+# reporta os devices fake do Selkies e quebra completamente o hotplug real
+# via libinput - foi por isso que o coldplug/hotplug dos devices do
+# Sunshine nunca apareciam no xinput, mesmo com todo o resto (permissao,
+# cgroup, grupo, /dev/input compartilhado) certo. Confirmado isolando a
+# variavel: com LD_PRELOAD removido, o hotplug funciona igual ao teste
+# manual. So remove aqui (Xorg nao precisa da libudev fake, so o Dolphin
+# via SDL precisa) - nao mexe no LD_PRELOAD de mais nenhum outro servico.
+exec env -u LD_PRELOAD s6-setuidgid abc \
+  /usr/bin/Xorg \
+    "${DISPLAY}" \
+    -config "${XORG_CONF}" \
+    -nolisten "tcp" \
+    -noreset

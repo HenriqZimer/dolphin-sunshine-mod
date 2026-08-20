@@ -1,0 +1,102 @@
+#!/usr/bin/with-contenv bash
+
+# POC: instala e roda o Sunshine ao lado do Selkies/Xvfb ja existente na
+# imagem base (linuxserver/dolphin), pra comparar lat/input lag do
+# Moonlight contra o streaming atual via KasmVNC.
+#
+# IMPORTANTE: a imagem roda em modo Wayland por padrao
+# (PIXELFLUX_WAYLAND=true e o default do proprio Dockerfile da imagem -
+# confirmado via `docker inspect`). Em modo Wayland, svc-xorg nem chega a
+# subir o Xvfb (o run script dele faz `sleep infinity` de proposito). O
+# Sunshine no Linux nao tem suporte robusto a Wayland (so X11/KMS/NvFBC),
+# entao este mod SO funciona com PIXELFLUX_WAYLAND=false setado no env do
+# pod - isso obriga o Xvfb (svc-xorg) a subir de verdade em :1. Confirmado
+# rodando local: com PIXELFLUX_WAYLAND=false o Sunshine loga "Screencasting
+# with X11" e captura certo; sem isso, o wait abaixo nunca destrava (o
+# timeout avisa nesse caso em vez de travar silenciosamente pra sempre).
+#
+# Xvfb (svc-xorg) e um X puramente por software, sem bind real de
+# KMS/DRM - confirmado lendo o run script dele na imagem. Por isso o
+# Selkies ja captura via XSHM (nao NvFBC) e so usa a GPU pra encode
+# (NVENC via libavcodec). O Sunshine faz o mesmo: cai automaticamente
+# pro capture X11/XSHM quando nao ha KMS real, entao roda sem
+# configuracao extra alem de DISPLAY (ja vem como ENV=:1 na imagem).
+
+SUNSHINE_CONFIG_DIR="/config/sunshine"
+SUNSHINE_ASSET_URL="${SUNSHINE_ASSET_URL:-https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-debian-trixie-amd64.deb}"
+
+# Espera o Xvfb (svc-xorg) estar de pe antes de tentar capturar o display.
+# Com timeout: se PIXELFLUX_WAYLAND=false nao foi setado, o Xvfb nunca sobe
+# e isso travaria pra sempre sem explicar o motivo.
+WAIT_ELAPSED=0
+WAIT_TIMEOUT=60
+until [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ]; do
+  if [ "${WAIT_ELAPSED}" -ge "${WAIT_TIMEOUT}" ]; then
+    echo "**** [sunshine-mod] Xvfb (X${DISPLAY#:}) nao subiu apos ${WAIT_TIMEOUT}s. ****"
+    echo "**** [sunshine-mod] Verifique se PIXELFLUX_WAYLAND=false esta setado no env do pod - ****"
+    echo "**** [sunshine-mod] sem isso a imagem roda em modo Wayland e o Sunshine nao consegue capturar. ****"
+    exec sleep infinity
+  fi
+  sleep 0.5
+  WAIT_ELAPSED=$((WAIT_ELAPSED + 1))
+done
+
+# NOTA (POC): o filesystem do container e efemero - so /config e /romm/*
+# sao PVC. Isso significa que o Sunshine e reinstalado via apt a cada
+# restart/recriacao do pod (nao so na primeira vez). Aceitavel pra POC de
+# lat/input lag; se for pra produzir, vale trocar por uma imagem propria
+# com o Sunshine ja embutido em vez de instalar em runtime.
+if ! command -v sunshine >/dev/null 2>&1; then
+  echo "**** [sunshine-mod] instalando Sunshine (via apt, resolve dependencias automaticamente) ****"
+  TMP_DEB="$(mktemp /tmp/sunshine-XXXXXX.deb)"
+  if ! curl -fL --retry 3 -o "${TMP_DEB}" "${SUNSHINE_ASSET_URL}"; then
+    echo "**** [sunshine-mod] falha ao baixar o Sunshine de ${SUNSHINE_ASSET_URL} - sem streaming Moonlight nesta sessao ****"
+    exec sleep infinity
+  fi
+  # svc-udev tambem roda apt-get (pro driver libinput) sem ordem garantida
+  # em relacao a este script. DPkg::Lock::Timeout sozinho nao foi
+  # suficiente (confirmado: ainda falhava as vezes mesmo com timeout=120,
+  # provavelmente por dpkg triggers concorrentes, nao so lock de arquivo).
+  # flock serializa de verdade com o mesmo lockfile que svc-udev usa.
+  if ! flock /var/lock/sunshine-mod-apt.lock bash -c "
+    apt-get -o DPkg::Lock::Timeout=120 update -qq &&
+    apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends '${TMP_DEB}'
+  "; then
+    echo "**** [sunshine-mod] falha ao instalar o pacote do Sunshine - sem streaming Moonlight nesta sessao ****"
+    rm -f "${TMP_DEB}"
+    exec sleep infinity
+  fi
+  rm -f "${TMP_DEB}"
+fi
+
+mkdir -p "${SUNSHINE_CONFIG_DIR}"
+chown -R abc:abc "${SUNSHINE_CONFIG_DIR}"
+
+# A Web UI do Sunshine bloqueia por CSRF se o Origin do browser nao estiver
+# na allowlist (ex.: acessando por IP em vez de localhost). Setar
+# SUNSHINE_CSRF_ALLOWED_ORIGINS (ex.: "https://192.168.1.100:47990") pra
+# nao precisar editar o sunshine.conf na mao toda vez que o pod reiniciar
+# (o arquivo e efemero, sem PVC nesse config o ganho e so dentro da mesma
+# vida do container).
+if [ -n "${SUNSHINE_CSRF_ALLOWED_ORIGINS}" ] && ! grep -q '^csrf_allowed_origins' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "csrf_allowed_origins = ${SUNSHINE_CSRF_ALLOWED_ORIGINS}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+fi
+
+# Sunshine cria mouse/teclado/gamepad virtuais via uinput. O node so
+# aparece se o container foi criado com --device=/dev/uinput (docker) ou
+# um hostPath equivalente (k8s) - sem isso o video funciona mas nao da
+# pra interagir (confirmado: "Unable to create virtual mouse/keyboard: No
+# such file or directory" no log quando o device nao esta presente). O
+# node no host normalmente e 0600 root:root, e o Sunshine roda como
+# usuario "abc" (nao-root), entao precisa desse chmod pra funcionar.
+if [ -e /dev/uinput ]; then
+  chmod 666 /dev/uinput
+else
+  echo "**** [sunshine-mod] /dev/uinput nao encontrado no container - mouse/teclado/gamepad NAO vao funcionar. ****"
+  echo "**** [sunshine-mod] Passe --device=/dev/uinput (docker) ou monte /dev/uinput via hostPath (k8s). ****"
+fi
+
+export HOME=/config
+
+exec s6-setuidgid abc \
+  /usr/bin/sunshine "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
