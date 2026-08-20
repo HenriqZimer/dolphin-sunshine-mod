@@ -33,6 +33,21 @@ fi
 
 mkdir -p /run/udev
 
+# Os devices que o Sunshine cria dinamicamente via uinput (Mouse/Keyboard/
+# Gamepad passthrough) as vezes aparecem como 0600 root:root - sem grupo
+# nenhum com acesso (confirmado no cluster real: diferente do ambiente
+# de teste local, onde vinham com um grupo "input" 0640 - aqui o host nao
+# tem essa udev rule padrao aplicada). O usuario "abc", que roda Xorg e
+# Sunshine, nunca consegue ler esses nodes nesse caso, nao importa em
+# quais grupos ele esteja - a permissao do ARQUIVO em si nao da acesso
+# a ninguem alem do root. Regra propria: qualquer device de input que
+# aparecer vira 0666 (mundo leitura/escrita), processada pelo nosso
+# proprio udevd abaixo assim que o device e criado.
+mkdir -p /etc/udev/rules.d
+cat > /etc/udev/rules.d/99-sunshine-input.rules <<'EOF'
+KERNEL=="event*|js*|uinput", MODE="0666"
+EOF
+
 # Os /dev/input/eventN que o Sunshine cria via uinput sao criados pelo
 # KERNEL DO HOST (uinput e um device real do host, passado via
 # --device=/dev/uinput) - o udevd do HOST (fora de qualquer container) e
