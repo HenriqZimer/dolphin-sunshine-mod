@@ -72,6 +72,17 @@ fi
 mkdir -p "${SUNSHINE_CONFIG_DIR}"
 chown -R abc:abc "${SUNSHINE_CONFIG_DIR}"
 
+# Sunshine so aceita UMA porta configuravel ("port", a porta "http") -
+# todas as outras (https, web UI, rtsp, video, control, audio, mic) sao
+# offsets FIXOS a partir dela (confirmado no codigo fonte: net::map_port
+# faz base+offset). SUNSHINE_PORT vem do chart (sunshine.port), default
+# 47989 igual ao proprio Sunshine. Precisa ser configurado aqui - os
+# containerPort do Deployment sao so documentacao/hostPort binding, quem
+# decide a porta de verdade e o sunshine.conf.
+if [ -n "${SUNSHINE_PORT}" ] && ! grep -q '^port' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "port = ${SUNSHINE_PORT}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+fi
+
 # A Web UI do Sunshine bloqueia por CSRF se o Origin do browser nao estiver
 # na allowlist (ex.: acessando por IP em vez de localhost). Setar
 # SUNSHINE_CSRF_ALLOWED_ORIGINS (ex.: "https://192.168.1.100:47990") pra
