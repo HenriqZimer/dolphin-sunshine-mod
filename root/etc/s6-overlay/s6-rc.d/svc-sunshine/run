@@ -23,7 +23,25 @@
 # configuracao extra alem de DISPLAY (ja vem como ENV=:1 na imagem).
 
 SUNSHINE_CONFIG_DIR="/config/sunshine"
-SUNSHINE_ASSET_URL="${SUNSHINE_ASSET_URL:-https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-debian-trixie-amd64.deb}"
+
+# O .deb do Sunshine e buildado contra libs de uma distro/versao especifica
+# (ex.: libicu76 so existe no Debian trixie, nao no Ubuntu) - baixar o
+# pacote errado instala mas fica com dependencias quebradas (confirmado:
+# "Depends: libicu76 (>= 76.1-1~) but it is not installable" tentando usar
+# o .deb do Debian trixie numa imagem base Ubuntu 26.04). As imagens
+# linuxserver.io deste projeto misturam Debian trixie e Ubuntu 26.04 -
+# resolve o asset certo lendo /etc/os-release em vez de fixar uma URL.
+if [ -z "${SUNSHINE_ASSET_URL}" ]; then
+  . /etc/os-release
+  case "${ID}" in
+    ubuntu) SUNSHINE_ASSET_URL="https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-ubuntu-${VERSION_ID}-amd64.deb" ;;
+    debian) SUNSHINE_ASSET_URL="https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-debian-${VERSION_CODENAME}-amd64.deb" ;;
+    *)
+      echo "**** [sunshine-mod] distro base '${ID}' desconhecida, assumindo Debian trixie (pode falhar) ****"
+      SUNSHINE_ASSET_URL="https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-debian-trixie-amd64.deb"
+      ;;
+  esac
+fi
 
 # Espera o Xvfb (svc-xorg) estar de pe antes de tentar capturar o display.
 # Com timeout: se PIXELFLUX_WAYLAND=false nao foi setado, o Xvfb nunca sobe
@@ -105,6 +123,22 @@ if [ -e /dev/uinput ]; then
 else
   echo "**** [sunshine-mod] /dev/uinput nao encontrado no container - mouse/teclado/gamepad NAO vao funcionar. ****"
   echo "**** [sunshine-mod] Passe --device=/dev/uinput (docker) ou monte /dev/uinput via hostPath (k8s). ****"
+fi
+
+# /dev/uhid e necessario pro Sunshine criar o virtual DS4/DS5 REAL (via
+# kernel uhid, protocolo HID de verdade) quando o cliente reporta um
+# gamepad tipo PlayStation. Sem ele, o Sunshine tenta e falha ("Unable to
+# create virtual DualShock 5 controller: Permission denied" ou "No such
+# file or directory" se o device nem existir), e cai pro fallback "Xbox
+# One controller (default)" - confirmado em teste que esse fallback NAO
+# funciona corretamente com controles PS4/PS5 reais conectados no cliente
+# Moonlight (eixos do analogico/trackpad chegam, mas nenhum botao). Mesmo
+# chmod que uinput - o node normalmente e 0600 root:root no host.
+if [ -e /dev/uhid ]; then
+  chmod 666 /dev/uhid
+else
+  echo "**** [sunshine-mod] /dev/uhid nao encontrado no container - Sunshine vai cair no fallback 'Xbox One controller (default)' pra qualquer gamepad, o que NAO emula corretamente controles PS4/PS5 reais (confirmado: analogicos funcionam, botoes nao). ****"
+  echo "**** [sunshine-mod] Passe --device=/dev/uhid (docker) ou monte /dev/uhid via hostPath (k8s). ****"
 fi
 
 export HOME=/config

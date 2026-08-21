@@ -1,0 +1,31 @@
+#!/usr/bin/with-contenv bash
+
+# Selkies injeta LD_PRELOAD=...selkies_joystick_interposer.so:...libudev-fake
+# via with-contenv em TODO processo do container. O interposer intercepta
+# as chamadas de joystick que o Dolphin/SDL2 faz e forca ele a enxergar
+# os 4 gamepads FAKE do Selkies (sempre presentes, mesmo sem controle
+# real) em vez do gamepad de verdade que o Sunshine cria via uinput/uhid
+# quando um Moonlight conecta. Efeito observado (confirmado no
+# azahar-sunshine-mod, mesma causa raiz): o analogico direito (mapeado a
+# partir do trackpad do PS4/PS5) responde normalmente, mas NENHUM botao
+# de face/gatilho funciona - porque esses eventos vao pro gamepad certo,
+# que o emulador nunca chega a ler.
+#
+# Fix: o Dolphin e lancado por /defaults/autostart (openbox autostart,
+# dentro da imagem) chamando /usr/games/dolphin-emu direto - substitui
+# esse binario por um wrapper que remove o LD_PRELOAD antes de exec'ar o
+# binario real (renomeado para .real). Roda como oneshot ANTES do svc-de
+# (que e quem eventualmente lanca o autostart), garantindo que o wrapper
+# ja exista no primeiro boot.
+
+DOLPHIN_BIN="/usr/games/dolphin-emu"
+DOLPHIN_REAL="/usr/games/dolphin-emu.real"
+
+if [ -f "${DOLPHIN_BIN}" ] && [ ! -f "${DOLPHIN_REAL}" ]; then
+  mv "${DOLPHIN_BIN}" "${DOLPHIN_REAL}"
+  cat > "${DOLPHIN_BIN}" <<'EOF'
+#!/bin/bash
+exec env -u LD_PRELOAD /usr/games/dolphin-emu.real "$@"
+EOF
+  chmod +x "${DOLPHIN_BIN}"
+fi
