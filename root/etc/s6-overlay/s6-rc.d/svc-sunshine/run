@@ -125,20 +125,39 @@ else
   echo "**** [sunshine-mod] Passe --device=/dev/uinput (docker) ou monte /dev/uinput via hostPath (k8s). ****"
 fi
 
-# /dev/uhid e necessario pro Sunshine criar o virtual DS4/DS5 REAL (via
-# kernel uhid, protocolo HID de verdade) quando o cliente reporta um
-# gamepad tipo PlayStation. Sem ele, o Sunshine tenta e falha ("Unable to
-# create virtual DualShock 5 controller: Permission denied" ou "No such
-# file or directory" se o device nem existir), e cai pro fallback "Xbox
-# One controller (default)" - confirmado em teste que esse fallback NAO
-# funciona corretamente com controles PS4/PS5 reais conectados no cliente
-# Moonlight (eixos do analogico/trackpad chegam, mas nenhum botao). Mesmo
-# chmod que uinput - o node normalmente e 0600 root:root no host.
+# /dev/uhid e necessario pro Sunshine criar qualquer gamepad virtual "de
+# verdade" no Linux (DS4/DS5/Switch/Xbox One - todos passam por uhid nesse
+# backend, so o uinput puro nao basta). Mesmo chmod que uinput - o node
+# normalmente e 0600 root:root no host.
 if [ -e /dev/uhid ]; then
   chmod 666 /dev/uhid
 else
-  echo "**** [sunshine-mod] /dev/uhid nao encontrado no container - Sunshine vai cair no fallback 'Xbox One controller (default)' pra qualquer gamepad, o que NAO emula corretamente controles PS4/PS5 reais (confirmado: analogicos funcionam, botoes nao). ****"
+  echo "**** [sunshine-mod] /dev/uhid nao encontrado no container - gamepad NAO vai funcionar (so mouse/teclado via uinput). ****"
   echo "**** [sunshine-mod] Passe --device=/dev/uhid (docker) ou monte /dev/uhid via hostPath (k8s). ****"
+fi
+
+# BUG CONFIRMADO (2026-08-21): com uhid presente e /dev/uhid liberado, o
+# auto-select do Sunshine ("gamepad = auto", o default) escolhe DualShock
+# 4/5 quando o cliente Moonlight reporta um controle PS4/PS5 real - e
+# nesse ponto o log mostra "Gamepad 0 will be DualShock 5 controller" sem
+# NENHUM erro, o device uhid e criado normal (confirmado via
+# /proc/bus/input/devices e evtest no event node), mas ZERO eventos de
+# botao ou analogico chegam no kernel, em qualquer sessao, com dois
+# clientes Moonlight diferentes (desktop Linux e Android) testados. A
+# causa raiz e a ausencia do driver de kernel hid-playstation neste node
+# Talos (`grep -i playstation /proc/modules` vazio) - sem ele, o kernel
+# usa hid-generic pro report descriptor DS4/DS5 do Sunshine, que nao
+# consegue tra-lo corretamente nesse cenario. Forcar "xone" (Xbox One,
+# bem suportado por hid-generic sem quirks especiais) resolve
+# completamente - confirmado botao a botao no Dolphin apos essa mudanca.
+# "ds4" NAO e uma opcao valida no Linux (so Windows) - setar isso e
+# ignorado silenciosamente pelo Sunshine, que cai de volta pro auto/DS5
+# quebrado (foi o que aconteceu na primeira tentativa de fix). No Linux
+# os valores validos sao: auto, ds5, switch, xone.
+if [ -n "${SUNSHINE_GAMEPAD_TYPE}" ] && ! grep -q '^gamepad' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "gamepad = ${SUNSHINE_GAMEPAD_TYPE}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+elif ! grep -q '^gamepad' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "gamepad = xone" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
 fi
 
 export HOME=/config
