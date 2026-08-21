@@ -160,6 +160,42 @@ elif ! grep -q '^gamepad' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; th
   echo "gamepad = xone" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
 fi
 
+# Performance: pula o auto-probe de encoder que o Sunshine faz a cada
+# start (testa nvenc/av1_nvenc/software em sequencia, gerando os erros
+# "Provided device doesn't support..." vistos no log) - forcar nvenc
+# direto, ja confirmado disponivel (RTX 3050 no node), inicia a sessao
+# mais rapido.
+if ! grep -q '^encoder' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "encoder = nvenc" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+fi
+
+# apps.json (Moonlight app list): o Sunshine le do XDG_CONFIG_HOME (nao do
+# SUNSHINE_CONFIG_DIR acima, que so serve o sunshine.conf como argumento
+# de linha de comando), com HOME=/config vira /config/.config/sunshine/
+# apps.json. Sem isso, o default de fabrica aparece no Moonlight ("Desktop",
+# "Low Res Desktop" com xrandr pra uma saida HDMI-1 que nao existe no
+# driver dummy, "Steam Big Picture") - substitui por uma unica entrada com
+# nome/icone do emulador. Sem "cmd": funciona igual ao "Desktop" default,
+# so streama a sessao ja rodando (o emulador ja autostarta via svc-de).
+SUNSHINE_XDG_CONFIG_DIR="/config/.config/sunshine"
+mkdir -p "${SUNSHINE_XDG_CONFIG_DIR}"
+if [ ! -f "${SUNSHINE_XDG_CONFIG_DIR}/apps.json" ]; then
+  cat > "${SUNSHINE_XDG_CONFIG_DIR}/apps.json" <<'APPSEOF'
+{
+  "env": {
+    "PATH": "$(PATH):$(HOME)/.local/bin"
+  },
+  "apps": [
+    {
+      "name": "Dolphin",
+      "image-path": "/usr/share/sunshine-mod-assets/icon.png"
+    }
+  ]
+}
+APPSEOF
+fi
+chown -R abc:abc "${SUNSHINE_XDG_CONFIG_DIR}"
+
 export HOME=/config
 
 exec s6-setuidgid abc \

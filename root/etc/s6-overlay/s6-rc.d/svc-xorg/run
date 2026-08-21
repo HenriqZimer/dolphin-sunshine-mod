@@ -46,9 +46,12 @@ rm -f "/tmp/.X${DISPLAY#:}-lock"
 mkdir -p /config/.local/share/xorg
 chown abc:abc /config/.local/share/xorg
 
-# Mesma resolucao default/override que o script original do Xvfb usava.
-WIDTH=1024
-HEIGHT=768
+# 1920x1080 (16:9) como default em vez do 1024x768 (4:3, herdado do
+# Xvfb original) - preenche a tela toda no Moonlight sem letterbox/pillarbox
+# na maioria dos clientes (celular/monitor widescreen). Ainda respeita
+# SELKIES_MANUAL_WIDTH/HEIGHT se setado explicitamente no pod.
+WIDTH=1920
+HEIGHT=1080
 if [ -n "${SELKIES_MANUAL_WIDTH}" ] && [ "${SELKIES_MANUAL_WIDTH}" != "0" ]; then
   WIDTH="${SELKIES_MANUAL_WIDTH}"
 fi
