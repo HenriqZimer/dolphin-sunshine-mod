@@ -105,9 +105,18 @@ EOF
 # variavel: com LD_PRELOAD removido, o hotplug funciona igual ao teste
 # manual. So remove aqui (Xorg nao precisa da libudev fake, so o Dolphin
 # via SDL precisa) - nao mexe no LD_PRELOAD de mais nenhum outro servico.
+# -maxclients: o driver dummy usa o default de compilacao do Xorg, que
+# aqui se mostrou baixo o suficiente pra estourar so com os proprios
+# clientes do desktop (window manager, xsettingsd, etc.) somados ao
+# emulador - "Maximum number of clients reached" ja na PRIMEIRA tentativa
+# de abrir o emulador, antes de qualquer coisa relacionada a crash loop.
+# O Xvfb original da imagem tinha um limite maior/diferente - isso e uma
+# regressao introduzida ao trocar pro Xorg+dummy. 512 e bem generoso pra
+# uma sessao de desktop com poucos apps.
 exec env -u LD_PRELOAD s6-setuidgid abc \
   /usr/bin/Xorg \
     "${DISPLAY}" \
     -config "${XORG_CONF}" \
+    -maxclients 512 \
     -nolisten "tcp" \
     -noreset
