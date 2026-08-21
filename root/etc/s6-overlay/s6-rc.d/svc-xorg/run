@@ -34,6 +34,18 @@ fi
 
 rm -f "/tmp/.X${DISPLAY#:}-lock"
 
+# Xorg nao cria o diretorio pai do log sozinho - falha com "Cannot open
+# log file" se ~/.local/share/xorg nao existir. Isso so passava
+# despercebido porque o DISPLAY default (:1) ja tinha esse diretorio
+# criado organicamente de algum boot anterior do Xvfb original da
+# imagem; DISPLAYs diferentes (necessarios pra rodar varios emuladores
+# com sunshine.hostNetwork simultaneos no mesmo node, ver comentario no
+# values.yaml do chart) nunca tiveram esse diretorio, quebrando o Xorg
+# logo de cara com esse erro silencioso (svc-sunshine so reportava
+# "Xvfb nao subiu apos 60s", sem apontar a causa real).
+mkdir -p /config/.local/share/xorg
+chown abc:abc /config/.local/share/xorg
+
 # Mesma resolucao default/override que o script original do Xvfb usava.
 WIDTH=1024
 HEIGHT=768
