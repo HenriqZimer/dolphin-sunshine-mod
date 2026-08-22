@@ -116,6 +116,21 @@ EOF
 # O Xvfb original da imagem tinha um limite maior/diferente - isso e uma
 # regressao introduzida ao trocar pro Xorg+dummy. 512 e bem generoso pra
 # uma sessao de desktop com poucos apps.
+# O driver dummy gera varios modos pro tamanho "Virtual" declarado acima,
+# mas ativa por padrao o de MAIOR taxa de atualizacao, nao o de maior
+# resolucao (confirmado: com Virtual 1920x1080, o xrandr trazia o modo
+# 1920x1080 disponivel mas ativo mesmo era 1400x1050@74Hz) - o emulador
+# ficava rodando num framebuffer menor que a tela toda, sobrando borda
+# preta no Moonlight. Forca o modo certo via xrandr assim que o socket
+# do X aparecer.
+(
+  until [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ]; do sleep 0.2; done
+  OUTPUT="$(env -u LD_PRELOAD DISPLAY="${DISPLAY}" xrandr --query 2>/dev/null | awk '/ connected/{print $1; exit}')"
+  if [ -n "${OUTPUT}" ]; then
+    env -u LD_PRELOAD DISPLAY="${DISPLAY}" xrandr --output "${OUTPUT}" --mode "${WIDTH}x${HEIGHT}" >/dev/null 2>&1
+  fi
+) &
+
 exec env -u LD_PRELOAD s6-setuidgid abc \
   /usr/bin/Xorg \
     "${DISPLAY}" \
