@@ -1,0 +1,95 @@
+#!/usr/bin/with-contenv bash
+
+# Congela (SIGSTOP) o processo do emulador quando nenhum cliente
+# Moonlight esta conectado, e descongela (SIGCONT) assim que um cliente
+# conecta - reduz o uso de CPU pra ~0% em idle sem matar o processo
+# (preserva o estado do jogo em memoria, ao contrario de derrubar/
+# reiniciar). RAM continua alocada (SIGSTOP nao libera memoria), so CPU
+# cai - foi a troca aceita: manter o pod/Sunshine sempre no ar pra
+# aceitar conexao a qualquer momento (sem precisar "acordar" o pod, que
+# nao da pra fazer com UDP/RTSP puro), so pausando o trabalho pesado.
+#
+# Deteccao via sunshine.log (caminho fixado em svc-sunshine/run via
+# log_path): as strings "CLIENT CONNECTED"/"CLIENT DISCONNECTED" sao
+# logadas pelo Sunshine em src/stream.cpp (confirmado no codigo fonte,
+# nao e um formato documentado que possa mudar sem aviso, mas e o sinal
+# mais direto disponivel sem falar com a API HTTP autenticada do
+# Sunshine).
+#
+# PID_PATTERN usa um path ancorado (^/opt/... ou ^/usr/...) em vez do
+# nome do emulador sozinho pra evitar dar match no proprio script deste
+# monitor (o path dele vive em /etc/s6-overlay/..., nunca colide).
+
+SUNSHINE_LOG="/config/sunshine/sunshine.log"
+PID_PATTERN='^/usr/games/dolphin-emu'
+IDLE_TIMEOUT="${SUNSHINE_IDLE_FREEZE_SECONDS:-90}"
+POLL_INTERVAL=3
+
+find_pid() {
+  pgrep -f "${PID_PATTERN}" | head -n1
+}
+
+# Espera o sunshine.log existir (so aparece depois que o svc-sunshine
+# sobe e o Sunshine escreve a primeira linha).
+until [ -f "${SUNSHINE_LOG}" ]; do
+  sleep 1
+done
+
+# So reage a linhas escritas A PARTIR de agora - evita ler eventos de uma
+# sessao anterior (o log persiste no mesmo PVC entre restarts do pod) ou
+# depender da ordem de boot entre este servico e o svc-sunshine.
+LOG_OFFSET="$(stat -c%s "${SUNSHINE_LOG}" 2>/dev/null || echo 0)"
+
+CLIENT_CONNECTED=0
+FROZEN=0
+DISCONNECTED_AT="$(date +%s)"
+
+while true; do
+  sleep "${POLL_INTERVAL}"
+
+  CUR_SIZE="$(stat -c%s "${SUNSHINE_LOG}" 2>/dev/null || echo 0)"
+  if [ "${CUR_SIZE}" -lt "${LOG_OFFSET}" ]; then
+    # Log rotacionado/truncado (Sunshine reinicia o arquivo a cada start
+    # do binario) - recomeca a leitura do inicio do arquivo novo.
+    LOG_OFFSET=0
+  fi
+
+  NEW_LINES="$(tail -c "+$((LOG_OFFSET + 1))" "${SUNSHINE_LOG}" 2>/dev/null)"
+  LOG_OFFSET="${CUR_SIZE}"
+
+  if [ -n "${NEW_LINES}" ]; then
+    while IFS= read -r line; do
+      case "${line}" in
+        *"CLIENT CONNECTED"*)
+          CLIENT_CONNECTED=1
+          if [ "${FROZEN}" -eq 1 ]; then
+            PID="$(find_pid)"
+            if [ -n "${PID}" ]; then
+              kill -CONT "${PID}" 2>/dev/null
+              echo "**** [idle-monitor] cliente conectado - processo (PID ${PID}) descongelado ****"
+            fi
+            FROZEN=0
+          fi
+          ;;
+        *"CLIENT DISCONNECTED"*)
+          CLIENT_CONNECTED=0
+          DISCONNECTED_AT="$(date +%s)"
+          ;;
+      esac
+    done <<EOF
+${NEW_LINES}
+EOF
+  fi
+
+  if [ "${CLIENT_CONNECTED}" -eq 0 ] && [ "${FROZEN}" -eq 0 ]; then
+    NOW="$(date +%s)"
+    if [ "$((NOW - DISCONNECTED_AT))" -ge "${IDLE_TIMEOUT}" ]; then
+      PID="$(find_pid)"
+      if [ -n "${PID}" ]; then
+        kill -STOP "${PID}" 2>/dev/null
+        echo "**** [idle-monitor] nenhum cliente ha ${IDLE_TIMEOUT}s - processo (PID ${PID}) congelado (SIGSTOP) ****"
+        FROZEN=1
+      fi
+    fi
+  fi
+done

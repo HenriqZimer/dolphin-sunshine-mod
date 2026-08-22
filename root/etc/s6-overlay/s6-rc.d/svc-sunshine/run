@@ -186,6 +186,17 @@ if ! grep -q '^sunshine_name' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null
   echo "sunshine_name = ${SUNSHINE_NAME:-Dolphin}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
 fi
 
+# Caminho fixo do log do Sunshine (log_path) - a documentacao oficial nao
+# especifica com certeza a resolucao de path relativo (se e relativo ao
+# dir do sunshine.conf, a um config dir padrao de compilacao, ou ao cwd
+# do processo), entao fixa um caminho absoluto em vez de confiar no
+# default ("sunshine.log" relativo) - o svc-*-idle-monitor (ver abaixo)
+# depende de saber esse caminho com certeza pra detectar client
+# connect/disconnect e congelar/descongelar o emulador em idle.
+if ! grep -q '^log_path' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "log_path = ${SUNSHINE_CONFIG_DIR}/sunshine.log" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+fi
+
 # Performance: pula o auto-probe de encoder que o Sunshine faz a cada
 # start (testa nvenc/av1_nvenc/software em sequencia, gerando os erros
 # "Provided device doesn't support..." vistos no log) - forcar nvenc
