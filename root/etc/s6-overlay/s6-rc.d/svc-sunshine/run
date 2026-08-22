@@ -102,13 +102,28 @@ if [ -n "${SUNSHINE_PORT}" ] && ! grep -q '^port' "${SUNSHINE_CONFIG_DIR}/sunshi
 fi
 
 # A Web UI do Sunshine bloqueia por CSRF se o Origin do browser nao estiver
-# na allowlist (ex.: acessando por IP em vez de localhost). Setar
-# SUNSHINE_CSRF_ALLOWED_ORIGINS (ex.: "https://192.168.1.100:47990") pra
-# nao precisar editar o sunshine.conf na mao toda vez que o pod reiniciar
-# (o arquivo e efemero, sem PVC nesse config o ganho e so dentro da mesma
-# vida do container).
-if [ -n "${SUNSHINE_CSRF_ALLOWED_ORIGINS}" ] && ! grep -q '^csrf_allowed_origins' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
-  echo "csrf_allowed_origins = ${SUNSHINE_CSRF_ALLOWED_ORIGINS}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+# na allowlist (ex.: acessando por IP em vez de localhost) - confirmado:
+# "The request was blocked by CSRF protection" ao abrir por IP. Em vez de
+# depender de SUNSHINE_CSRF_ALLOWED_ORIGINS setado na mao por emulador
+# (esquecivel - ja aconteceu de faltar em 4 de 6), detecta o proprio IP
+# automaticamente: com hostNetwork:true o container enxerga a rede do
+# host direto, entao "ip route get" pra qualquer destino externo retorna
+# o IP real do node como source, sem depender do nome da interface (que
+# ja variou entre nodes deste cluster - eth0 vs ens18). SUNSHINE_PORT+1 e
+# a porta da Web UI (offset fixo do Sunshine). Ainda permite
+# SUNSHINE_CSRF_ALLOWED_ORIGINS como override manual se setado.
+if ! grep -q '^csrf_allowed_origins' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  if [ -n "${SUNSHINE_CSRF_ALLOWED_ORIGINS}" ]; then
+    echo "csrf_allowed_origins = ${SUNSHINE_CSRF_ALLOWED_ORIGINS}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+  else
+    SELF_IP="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+')"
+    WEB_PORT="$(( ${SUNSHINE_PORT:-47989} + 1 ))"
+    if [ -n "${SELF_IP}" ]; then
+      echo "csrf_allowed_origins = https://${SELF_IP}:${WEB_PORT}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+    else
+      echo "**** [sunshine-mod] nao consegui detectar o IP do node pra allowlist do CSRF - a Web UI pode bloquear acesso por IP. ****"
+    fi
+  fi
 fi
 
 # Sunshine cria mouse/teclado/gamepad virtuais via uinput. O node so
