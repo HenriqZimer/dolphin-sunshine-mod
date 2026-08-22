@@ -46,8 +46,15 @@ fi
 # Espera o Xvfb (svc-xorg) estar de pe antes de tentar capturar o display.
 # Com timeout: se PIXELFLUX_WAYLAND=false nao foi setado, o Xvfb nunca sobe
 # e isso travaria pra sempre sem explicar o motivo.
+# BUG CONFIRMADO (2026-08-22): 60s nao e suficiente pra primeira
+# instalacao via apt do driver Xorg dummy + libinput num boot frio
+# (filesystem do container e efemero, reinstala do zero a cada
+# recriacao do pod) - svc-sunshine desistia ("exec sleep infinity",
+# sem retry) enquanto o apt ainda estava rodando, deixando o Sunshine
+# permanentemente fora do ar ate o pod ser recriado de novo. 240s da
+# folga suficiente confirmada.
 WAIT_ELAPSED=0
-WAIT_TIMEOUT=60
+WAIT_TIMEOUT=240
 until [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ]; do
   if [ "${WAIT_ELAPSED}" -ge "${WAIT_TIMEOUT}" ]; then
     echo "**** [sunshine-mod] Xvfb (X${DISPLAY#:}) nao subiu apos ${WAIT_TIMEOUT}s. ****"
