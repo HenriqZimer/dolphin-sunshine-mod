@@ -175,6 +175,17 @@ elif ! grep -q '^gamepad' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; th
   echo "gamepad = xone" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
 fi
 
+# Nome do "computador" que aparece na lista de PCs do Moonlight - sem
+# isso cada emulador aparece com o hostname generico do pod (dificil de
+# distinguir um do outro na lista). Usa o nome do emulador, igual ao app
+# dentro do apps.json (ver abaixo) - resultado: abrir o Moonlight mostra
+# uma lista organizada ("Dolphin", "Azahar", "PCSX2"...), cada um pareado
+# uma vez so, com 1 app cada (abre direto sem precisar escolher o app
+# depois de conectar).
+if ! grep -q '^sunshine_name' "${SUNSHINE_CONFIG_DIR}/sunshine.conf" 2>/dev/null; then
+  echo "sunshine_name = ${SUNSHINE_NAME:-Dolphin}" >> "${SUNSHINE_CONFIG_DIR}/sunshine.conf"
+fi
+
 # Performance: pula o auto-probe de encoder que o Sunshine faz a cada
 # start (testa nvenc/av1_nvenc/software em sequencia, gerando os erros
 # "Provided device doesn't support..." vistos no log) - forcar nvenc
